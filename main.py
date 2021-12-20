@@ -14,6 +14,7 @@ import signal
 import subprocess
 import sys
 import time
+import numpy as np
 
 from PIL import Image, ImageOps, ImageFilter
 from torch import nn, optim
@@ -71,6 +72,7 @@ def main():
 
 
 def main_worker(gpu, args):
+    train_loss = []
     args.rank += gpu
     torch.distributed.init_process_group(
         backend='nccl', init_method=args.dist_url,
@@ -122,6 +124,8 @@ def main_worker(gpu, args):
     scaler = torch.cuda.amp.GradScaler()
     for epoch in range(start_epoch, args.epochs):
         sampler.set_epoch(epoch)
+        epoch_loss = 0
+        num_images = 0
         for step, ((y1, y2), _) in enumerate(loader, start=epoch * len(loader)):
             y1 = y1.cuda(gpu, non_blocking=True)
             y2 = y2.cuda(gpu, non_blocking=True)
@@ -129,6 +133,10 @@ def main_worker(gpu, args):
             optimizer.zero_grad()
             with torch.cuda.amp.autocast():
                 loss = model.forward(y1, y2)
+
+            epoch_loss += loss
+            num_images += y1.size(0)
+
             scaler.scale(loss).backward()
             scaler.step(optimizer)
             scaler.update()
@@ -141,6 +149,9 @@ def main_worker(gpu, args):
                                  time=int(time.time() - start_time))
                     print(json.dumps(stats))
                     print(json.dumps(stats), file=stats_file)
+
+        train_loss.append(epoch / num_images)
+
         if args.rank == 0:
             # save checkpoint
             state = dict(epoch=epoch + 1, model=model.state_dict(),
@@ -150,6 +161,8 @@ def main_worker(gpu, args):
         # save final model
         torch.save(model.module.backbone.state_dict(),
                    args.checkpoint_dir / 'resnet50.pth')
+
+    np.save("train_loss", train_loss)
 
 
 def adjust_learning_rate(args, optimizer, loader, step):
@@ -188,7 +201,7 @@ class BarlowTwins(nn.Module):
     def __init__(self, args):
         super().__init__()
         self.args = args
-        self.backbone = torchvision.models.resnet50(zero_init_residual=True)
+        self.backbone = torchvision.models.resnet50(pretrained=True)
         self.backbone.fc = nn.Identity()
 
         # projector
