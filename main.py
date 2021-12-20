@@ -134,7 +134,7 @@ def main_worker(gpu, args):
             with torch.cuda.amp.autocast():
                 loss = model.forward(y1, y2)
 
-            epoch_loss += loss
+            epoch_loss += loss.item() * y1.size(0)
             num_images += y1.size(0)
 
             scaler.scale(loss).backward()
@@ -150,7 +150,7 @@ def main_worker(gpu, args):
                     print(json.dumps(stats))
                     print(json.dumps(stats), file=stats_file)
 
-        train_loss.append(epoch / num_images)
+        train_loss.append(epoch_loss / num_images)
 
         if args.rank == 0:
             # save checkpoint
