@@ -22,6 +22,8 @@ import torch
 import torchvision
 import torchvision.transforms as transforms
 
+from utils import kNN
+
 parser = argparse.ArgumentParser(description='Barlow Twins Training')
 parser.add_argument('data', type=Path, metavar='DIR',
                     help='path to dataset')
@@ -73,6 +75,9 @@ def main():
 
 def main_worker(gpu, args):
     train_loss = []
+    top1_accuracies = []
+    top5_accuracies = []
+    best_top1 = -1.
     args.rank += gpu
     torch.distributed.init_process_group(
         backend='nccl', init_method=args.dist_url,
@@ -120,6 +125,25 @@ def main_worker(gpu, args):
         dataset, batch_size=per_device_batch_size, num_workers=args.workers,
         pin_memory=True, sampler=sampler)
 
+    val_augmentation = [
+        transforms.Resize(256),
+        transforms.CenterCrop(224),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+    ]
+
+    train_knn_dataset = torchvision.datasets.ImageFolder(args.data / 'train', transforms.Compose(val_augmentation))
+
+    val_dataset = torchvision.datasets.ImageFolder(args.data / 'val', transforms.Compose(val_augmentation))
+
+    train_knn_loader = torch.utils.data.DataLoader(
+        train_knn_dataset, batch_size=per_device_batch_size, shuffle=False, num_workers=args.workers, pin_memory=True
+    )
+
+    val_loader = torch.utils.data.DataLoader(
+        val_dataset, batch_size=per_device_batch_size, shuffle=False, num_workers=args.workers, pin_memory=True
+    )
+
     start_time = time.time()
     scaler = torch.cuda.amp.GradScaler()
     for epoch in range(start_epoch, args.epochs):
@@ -157,12 +181,24 @@ def main_worker(gpu, args):
             state = dict(epoch=epoch + 1, model=model.state_dict(),
                          optimizer=optimizer.state_dict())
             torch.save(state, args.checkpoint_dir / 'checkpoint.pth')
+            np.save("train_loss", train_loss)
+
+            if epoch == 0 or (epoch + 1) % 20 == 0:
+                top1, top5 = kNN(epoch, model.module.backbone, train_knn_loader, val_loader, 200, "cuda")
+                top1_accuracies.append(top1)
+                top5_accuracies.append(top5)
+                np.save("knn_top1_accuracies", top1_accuracies)
+                np.save("knn_top5_accuracies", top5_accuracies)
+
+                if top1 > best_top1:
+                    best_top1 = top1
+                    torch.save(state, args.checkpoint_dir / 'checkpoint_best_accuracy.pth')
+
     if args.rank == 0:
         # save final model
         torch.save(model.module.backbone.state_dict(),
                    args.checkpoint_dir / 'resnet50.pth')
-
-    np.save("train_loss", train_loss)
+        np.save("train_loss", train_loss)
 
 
 def adjust_learning_rate(args, optimizer, loader, step):
