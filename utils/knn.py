@@ -59,4 +59,4 @@ def kNN(epoch, model, train_dataloader, val_dataloader, K, device, sigma=10):
         print('Test epoch [{}]\t'
               'Top 1: {:02f} Top5: {:02f}'.format(epoch, top1 * 100. / total, top5 * 100. / total))
     model.train()
-    return top1, top5
+    return top1 * 100. / total, top5 * 100. / total
