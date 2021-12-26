@@ -240,7 +240,6 @@ class SimSiam(nn.Module):
     def __init__(self, args):
         super().__init__()
         self.args = args
-        self.criterion = nn.CosineSimilarity(dim=1).cuda(args.gpu)
         self.backbone = torchvision.models.resnet50(pretrained=True)
         self.backbone.fc = nn.Identity()
 
