@@ -268,7 +268,7 @@ class SimSiam(nn.Module):
         p1 = self.predictor(z1)
         p2 = self.predictor(z2)
 
-        return p1, p2, z1.detatch(), z2.detatch()
+        return p1, p2, z1.detach(), z2.detach()
 
 
 class LARS(optim.Optimizer):
