@@ -18,6 +18,7 @@ from torch import nn, optim
 from torchvision import models, datasets, transforms
 import torch
 import torchvision
+import numpy as np
 
 parser = argparse.ArgumentParser(description='Evaluate resnet50 features on ImageNet')
 parser.add_argument('data', type=Path, metavar='DIR',
@@ -64,6 +65,10 @@ def main():
 
 
 def main_worker(gpu, args):
+    train_loss = []
+    train_acc = []
+    val_loss = []
+    val_acc = []
     args.rank += gpu
     torch.distributed.init_process_group(
         backend='nccl', init_method=args.dist_url,
@@ -82,6 +87,11 @@ def main_worker(gpu, args):
     state_dict = torch.load(args.pretrained, map_location='cpu')
     missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=False)
     assert missing_keys == ['fc.weight', 'fc.bias'] and unexpected_keys == []
+
+    # Change the dimension of the fc to 101
+    in_features = model.fc.in_features
+    model.fc = nn.Linear(in_features, 101)
+
     model.fc.weight.data.normal_(mean=0.0, std=0.01)
     model.fc.bias.data.zero_()
     if args.weights == 'freeze':
@@ -158,12 +168,21 @@ def main_worker(gpu, args):
         else:
             assert False
         train_sampler.set_epoch(epoch)
+        epoch_loss = 0
+        epoch_acc = 0
+        num_images = 0
         for step, (images, target) in enumerate(train_loader, start=epoch * len(train_loader)):
             output = model(images.cuda(gpu, non_blocking=True))
             loss = criterion(output, target.cuda(gpu, non_blocking=True))
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
+
+            epoch_loss += loss.item() * images.size(0)
+            num_images += images.size(0)
+            acc1, acc5 = accuracy(output, target.cuda(gpu, non_blocking=True), topk=(1, 5))
+            epoch_acc += acc1 * images.size(0)
+
             if step % args.print_freq == 0:
                 torch.distributed.reduce(loss.div_(args.world_size), 0)
                 if args.rank == 0:
@@ -176,14 +195,24 @@ def main_worker(gpu, args):
                     print(json.dumps(stats))
                     print(json.dumps(stats), file=stats_file)
 
+        train_loss.append(epoch_loss / num_images)
+        train_acc.append(epoch_acc / num_images)
+
         # evaluate
         model.eval()
         if args.rank == 0:
             top1 = AverageMeter('Acc@1')
             top5 = AverageMeter('Acc@5')
             with torch.no_grad():
+                val_epoch_loss = 0
+                num_images = 0
                 for images, target in val_loader:
                     output = model(images.cuda(gpu, non_blocking=True))
+
+                    loss = criterion(output, target.cuda(gpu, non_blocking=True))
+                    val_epoch_loss += loss.item() * images.size(0)
+                    num_images += images.size(0)
+
                     acc1, acc5 = accuracy(output, target.cuda(gpu, non_blocking=True), topk=(1, 5))
                     top1.update(acc1[0].item(), images.size(0))
                     top5.update(acc5[0].item(), images.size(0))
@@ -192,6 +221,9 @@ def main_worker(gpu, args):
             stats = dict(epoch=epoch, acc1=top1.avg, acc5=top5.avg, best_acc1=best_acc.top1, best_acc5=best_acc.top5)
             print(json.dumps(stats))
             print(json.dumps(stats), file=stats_file)
+
+            val_loss.append(val_epoch_loss / num_images)
+            val_acc.append(top1.avg)
 
         # sanity check
         if args.weights == 'freeze':
@@ -206,7 +238,10 @@ def main_worker(gpu, args):
                 epoch=epoch + 1, best_acc=best_acc, model=model.state_dict(),
                 optimizer=optimizer.state_dict(), scheduler=scheduler.state_dict())
             torch.save(state, args.checkpoint_dir / 'checkpoint.pth')
-
+            np.save("train_loss", train_loss)
+            np.save("train_accuracy", train_acc)
+            np.save("val_loss", val_loss)
+            np.save("val_accuracy", val_acc)
 
 def handle_sigusr1(signum, frame):
     os.system(f'scontrol requeue {os.getenv("SLURM_JOB_ID")}')
