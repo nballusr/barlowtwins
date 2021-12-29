@@ -198,7 +198,7 @@ def main_worker(gpu, args):
                     print(json.dumps(stats), file=stats_file)
 
         train_loss.append(epoch_loss / num_images)
-        train_acc.append(epoch_acc / num_images)
+        train_acc.append(float(epoch_acc / num_images).cpu())
 
         # evaluate
         model.eval()
