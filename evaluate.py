@@ -83,14 +83,16 @@ def main_worker(gpu, args):
     torch.cuda.set_device(gpu)
     torch.backends.cudnn.benchmark = True
 
-    model = models.resnet50().cuda(gpu)
-    state_dict = torch.load(args.pretrained, map_location='cpu')
-    missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=False)
-    assert missing_keys == ['fc.weight', 'fc.bias'] and unexpected_keys == []
+    model = models.resnet50()
 
     # Change the dimension of the fc to 101
     in_features = model.fc.in_features
     model.fc = nn.Linear(in_features, 101)
+    model = model.cuda(gpu)
+
+    state_dict = torch.load(args.pretrained, map_location='cpu')
+    missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=False)
+    assert missing_keys == ['fc.weight', 'fc.bias'] and unexpected_keys == []
 
     model.fc.weight.data.normal_(mean=0.0, std=0.01)
     model.fc.bias.data.zero_()
