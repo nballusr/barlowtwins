@@ -69,6 +69,8 @@ def main_worker(gpu, args):
     train_acc = []
     val_loss = []
     val_acc = []
+    best_val_loss = float('inf')
+
     args.rank += gpu
     torch.distributed.init_process_group(
         backend='nccl', init_method=args.dist_url,
@@ -224,7 +226,12 @@ def main_worker(gpu, args):
             print(json.dumps(stats))
             print(json.dumps(stats), file=stats_file)
 
-            val_loss.append(val_epoch_loss / num_images)
+            val_epoch_loss_mean = val_epoch_loss / num_images
+            val_loss.append(val_epoch_loss_mean)
+            val_loss_improved = False
+            if val_epoch_loss_mean < best_val_loss:
+                val_loss_improved = True
+                best_val_loss = val_epoch_loss_mean
             val_acc.append(top1.avg)
 
         # sanity check
@@ -240,6 +247,8 @@ def main_worker(gpu, args):
                 epoch=epoch + 1, best_acc=best_acc, model=model.state_dict(),
                 optimizer=optimizer.state_dict(), scheduler=scheduler.state_dict())
             torch.save(state, args.checkpoint_dir / 'checkpoint.pth')
+            if val_loss_improved:
+                torch.save(state, args.checkpoint_dir / 'best_checkpoint.pth')
             np.save("train_loss", train_loss)
             np.save("train_accuracy", train_acc)
             np.save("val_loss", val_loss)
